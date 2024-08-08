@@ -13,7 +13,6 @@ from langchain_cohere import ChatCohere
 import json_repair
 import uuid
 from typing import Any, Dict, List, Optional
-import neo4j_graph 
 
 config = load_config()
 # graph = Neo4jGraph(url = config["Neo4j"]["uri"], username = config["Neo4j"]["username"], password = config["Neo4j"]["password"])
