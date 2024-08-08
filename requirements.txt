@@ -1,0 +1,8 @@
+langchain
+langchain-community
+langchain-cohere
+langchain-openai
+langchain-experimental
+azure-ai-documentintelligence
+neo4j
+json-repair
