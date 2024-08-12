@@ -4,7 +4,7 @@ from langchain_core.prompts.chat import HumanMessagePromptTemplate, ChatPromptTe
 from langchain_core.output_parsers.json import JsonOutputParser 
 from data_processing import *
 from langchain_cohere import ChatCohere, CohereEmbeddings
-from typing import Any, Dict, List, Optional
+from typing import List
 from langchain_community.vectorstores import Chroma
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.pydantic_v1 import BaseModel, Field, validator
@@ -18,7 +18,7 @@ os.environ['LANGCHAIN_API_KEY'] = config['Langchain']['api_key']
 os.environ['LANGCHAIN_PROJECT'] = config['Langchain']['project_name']
 
 return_prompt = """
-What is the return of the fund in {month} {year}? Do not provide any explanation or context. Use the following pieces of retrieved context to answer the question. 
+What is the net return of the fund in {month} {year}? Do not provide any explanation or context. Use the following pieces of retrieved context to answer the question. 
 If you don't know the answer, or if the context is not relevant, output 'n/a'. If the return is surrounded in parentheses (e.g. (2.03%)) then this represents a negative return, so just output '-2.03%'.
 The term 'MTD' refers to the month-to-date return, and is the return of the month in that month. Output should be lowercase. 
 
@@ -53,10 +53,9 @@ def create_prompt(month, year):
 
 class MonthlyReturn(BaseModel):
     performance: str = Field(description="a percentage, ends in a percentage sign, e.g. '1.43%'. Or is 'n/a' if the return is not available.")
-    
 
 def create_chain(prompt):
-    llm = ChatCohere(model="command-r-plus", temperature = 0)
+    llm = ChatCohere(model="command-r-plus", temperature = config['LLM']['temperature'])
     #structured_llm = llm.with_structured_output(MonthlyReturn)
     parser = PydanticOutputParser(pydantic_object = MonthlyReturn)
     chain = prompt | llm | parser
@@ -69,6 +68,9 @@ def get_return_from_pdf(filePath: str):
     month, year = get_month_and_year_from_path(filePath)
     question = f"What is the return of the fund in {month} {year}? Provide only the percentage value, including the percentage sign."
     context = retriever.invoke(question)
+    vectorstore.delete_collection()
+    del vectorstore
+    del retriever
     prompt = create_prompt(month, year)
     chain = create_chain(prompt)
     return chain.invoke({'context': context})
@@ -80,6 +82,9 @@ def get_return_from_json(filePath: str):
     month, year = get_month_and_year_from_path(filePath)
     question = f"What is the return of the fund in {month} {year}? Provide only the percentage value, including the percentage sign."
     context = retriever.invoke(question)
+    vectorstore.delete_collection()
+    del vectorstore
+    del retriever
     print("NUMBER OF DOCS: ", len(context))
     prompt = create_prompt(month, year)
     chain = create_chain(prompt)
@@ -134,5 +139,7 @@ def process_folder_json(folderPath: str):
 
     df = pd.DataFrame(lis, columns=['Filename', 'Monthly Return'])
     csv_path = folderPath + "/" + str(year) + "_" + str(month) + ".csv"
-    df.to_csv(csv_path, index=False)
-
+    if os.path.exists(csv_path):
+        df.to_csv(csv_path, mode='a', header=False, index=False)
+    else:
+        df.to_csv(csv_path, index=False)

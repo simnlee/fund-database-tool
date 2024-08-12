@@ -35,7 +35,7 @@ def analyze_pdf_with_azure(pdf_path: str):
     tables = []
     for paragraph in result.paragraphs:
         text = paragraph.content
-        if has_numbers(text):
+        if has_numbers(text) and len(text.split()) > 5:
             paragraphs.append(text)
     
     for table in result.tables:
@@ -85,7 +85,7 @@ def extract_paragraphs_and_tables_from_json(file_path: str):
     for paragraph in data['analyzeResult']['paragraphs']:
         text = paragraph['content']
         # count word count of text
-        if has_numbers(text):
+        if has_numbers(text) and len(text.split()) > 5:
             paragraphs.append(text)
             i += 1
         
