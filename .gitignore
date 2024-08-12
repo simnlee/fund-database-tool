@@ -9,3 +9,6 @@ __pycache__/
 
 # Ignore config
 config.ini
+
+# Ignore factsheets
+factsheets/
