@@ -1,8 +1,7 @@
 langchain
 langchain-community
-langchain-cohere
-langchain-openai
+langchain-cohere==0.1.9
 langchain-experimental
+langsmith
 azure-ai-documentintelligence
-neo4j
-json-repair
+chromadb

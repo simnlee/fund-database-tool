@@ -2,136 +2,137 @@ import os
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.prompts.chat import HumanMessagePromptTemplate, ChatPromptTemplate, SystemMessage
 from langchain_core.output_parsers.json import JsonOutputParser 
-from langchain_experimental.graph_transformers.llm import UnstructuredRelation
-from langchain_community.graphs.graph_document import GraphDocument, Node, Relationship
 from data_processing import *
-# from langchain.graphs import Neo4jGraph
-from neo4j import GraphDatabase, Query
-from neo4j.exceptions import CypherSyntaxError
-from constants import EXAMPLES, GRAPH_BUILDER_HUMAN_PROMPT, GRAPH_BUILDER_SYSTEM_PROMPT, NODE_IMPORT_QUERY, REL_IMPORT_QUERY
-from langchain_cohere import ChatCohere
-import json_repair
-import uuid
+from langchain_cohere import ChatCohere, CohereEmbeddings
 from typing import Any, Dict, List, Optional
+from langchain_community.vectorstores import Chroma
+from langchain.output_parsers import PydanticOutputParser
+from langchain_core.pydantic_v1 import BaseModel, Field, validator
+import pandas as pd
 
 config = load_config()
-# graph = Neo4jGraph(url = config["Neo4j"]["uri"], username = config["Neo4j"]["username"], password = config["Neo4j"]["password"])
-# driver = GraphDatabase.driver(config["Neo4j"]["uri"], auth=(config["Neo4j"]["username"], config["Neo4j"]["password"]))
 os.environ['COHERE_API_KEY'] = config["Cohere"]["api_key"]
 os.environ['LANGCHAIN_TRACING_V2'] = config['Langchain']['tracing']
 os.environ['LANGCHAIN_ENDPOINT'] = config['Langchain']['endpoint']
 os.environ['LANGCHAIN_API_KEY'] = config['Langchain']['api_key']
 os.environ['LANGCHAIN_PROJECT'] = config['Langchain']['project_name']
 
-def create_prompt(fund_name: str, year: int, month: int):
-    system_message = SystemMessage(content = GRAPH_BUILDER_SYSTEM_PROMPT)
-    parser = JsonOutputParser(pydantic_object = UnstructuredRelation)
-    human_prompt = PromptTemplate(template = GRAPH_BUILDER_HUMAN_PROMPT, 
-                                  input_variables = ['input'], 
-                                  partial_variables = {'format_instructions': parser.get_format_instructions(),
-                                                       'examples': EXAMPLES,
-                                                       'month': month,
-                                                       'year': year,
-                                                       'fund_name': fund_name})
-    human_message = HumanMessagePromptTemplate(prompt = human_prompt)
-    return ChatPromptTemplate.from_messages([system_message, human_message])
+return_prompt = """
+What is the return of the fund in {month} {year}? Do not provide any explanation or context. Use the following pieces of retrieved context to answer the question. 
+If you don't know the answer, or if the context is not relevant, output 'n/a'. If the return is surrounded in parentheses (e.g. (2.03%)) then this represents a negative return, so just output '-2.03%'.
+The term 'MTD' refers to the month-to-date return, and is the return of the month in that month. Output should be lowercase. 
 
-def create_graph_transformer(prompt: ChatPromptTemplate, llm):
-    chain = prompt | llm
+Context: {context}
+
+Format instructions: {format_instructions}
+"""
+
+PROMPT_TEMPLATE = PromptTemplate(template=return_prompt, partial_variables={"month": "month", "year": "year", "format_instructions": "format_instructions"}, input_variables=["context"])
+
+def tables_to_vector(tables: List[Document]):
+    vectorstore = Chroma.from_documents(
+        documents = tables,
+        embedding = CohereEmbeddings(model = "embed-english-v3.0")
+    )
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 7})
+    return vectorstore, retriever
+
+def get_month_and_year_from_path(filepath: str):
+    parent_dir = os.path.dirname(filepath)
+    month = str(os.path.basename(parent_dir))
+    parent_parent_dir = os.path.dirname(parent_dir)
+    year = str(os.path.basename(parent_parent_dir))
+    return month, year
+
+def create_prompt(month, year):
+    parser = PydanticOutputParser(pydantic_object = MonthlyReturn)
+    print("FORMAT INSTRUCTIONS:" + parser.get_format_instructions())
+
+    prompt = PROMPT_TEMPLATE.partial(month=month, year=year, format_instructions=parser.get_format_instructions())
+    return prompt
+
+class MonthlyReturn(BaseModel):
+    performance: str = Field(description="a percentage, ends in a percentage sign, e.g. '1.43%'. Or is 'n/a' if the return is not available.")
+    
+
+def create_chain(prompt):
+    llm = ChatCohere(model="command-r-plus", temperature = 0)
+    #structured_llm = llm.with_structured_output(MonthlyReturn)
+    parser = PydanticOutputParser(pydantic_object = MonthlyReturn)
+    chain = prompt | llm | parser
     return chain
 
+def get_return_from_pdf(filePath: str):
+    paragraphs, tables = pdf_to_lc_docs(filePath)
+    docs = paragraphs + tables
+    vectorstore, retriever = tables_to_vector(docs)
+    month, year = get_month_and_year_from_path(filePath)
+    question = f"What is the return of the fund in {month} {year}? Provide only the percentage value, including the percentage sign."
+    context = retriever.invoke(question)
+    prompt = create_prompt(month, year)
+    chain = create_chain(prompt)
+    return chain.invoke({'context': context})
 
-def documents_to_graph_doc(documents: list, fund_name: str, year: int, month: int) -> GraphDocument: 
-    prompt = create_prompt(fund_name, year, month)
-    llm = ChatCohere(model=config["Cohere"]["model"])
-    chain = create_graph_transformer(prompt, llm)
-    source_doc_id = str(uuid.uuid3(uuid.NAMESPACE_OID, documents[0].metadata['source']))
-    #source_doc_id = documents[0].metadata['fund_name'] + "_" + str(documents[0].metadata['year']) + "_" + str(documents[0].metadata['month'])
-    print("TYPEE:", type(documents[0].metadata['source']))
-    source_doc = Document(id = source_doc_id, page_content=str(documents[0].metadata['source']), metadata=documents[0].metadata)
+def get_return_from_json(filePath: str):
+    paragraphs, tables = json_to_lc_docs(filePath)
+    docs = paragraphs + tables
+    vectorstore, retriever = tables_to_vector(docs)
+    month, year = get_month_and_year_from_path(filePath)
+    question = f"What is the return of the fund in {month} {year}? Provide only the percentage value, including the percentage sign."
+    context = retriever.invoke(question)
+    print("NUMBER OF DOCS: ", len(context))
+    prompt = create_prompt(month, year)
+    chain = create_chain(prompt)
+    return chain.invoke({'context': context})
 
-    nodes_set = set()
-    relationships = []
+def process_folder(folderPath: str):
+    month = str(os.path.basename(folderPath))
+    parent_dir = os.path.dirname(folderPath)
+    year = str(os.path.basename(parent_dir))
+    existing_file_list = []
+    # check if csv already exists 
+    if os.path.exists(folderPath + "/" + str(year) + "_" + str(month) + ".csv"):
+        old_df = pd.read_csv(folderPath + "/" + str(year) + "_" + str(month) + ".csv")
+        existing_file_list = old_df['Filename'].tolist()
+    files = os.listdir(folderPath)
+    lis = []
+    for file in files:
+        if file.endswith(".pdf"):
+            if os.path.basename(file) not in existing_file_list:
+                filePath = os.path.join(folderPath, file)
+                file_return = get_return_from_pdf(filePath)
+                # initialize list of lists
+                entry = [os.path.basename(filePath), file_return.performance]
+                lis.append(entry)
 
-    for i in range(len(documents)):
-        print(f'Processing document {i+1}/{len(documents)}...')
-        doc = documents[i]
-        raw_response = chain.invoke({'input': doc.page_content})
-        response = json_repair.loads(raw_response.content)
+    df = pd.DataFrame(lis, columns=['Filename', 'Monthly Return'])
+    csv_path = folderPath + "/" + str(year) + "_" + str(month) + ".csv"
+    if os.path.exists(csv_path):
+        df.to_csv(csv_path, mode='a', header=False, index=False)
+    else:
+        df.to_csv(csv_path, index=False)
 
-        for rel in response:
-            try:
-                rel['head_type'] = rel['head_type'] if rel['head_type'] else 'Unknown'
-                rel["tail_type"] = rel["tail_type"] if rel["tail_type"] else "Unknown"
-                rel['head'] = rel['head'] if rel['head'] else 'Unknown'
-                rel['tail'] = rel['tail'] if rel['tail'] else 'Unknown'
-                rel['relation'] = rel['relation'] if rel['relation'] else 'Unknown'
-                nodes_set.add((rel["head"], rel["head_type"]))
-                nodes_set.add((rel["tail"], rel["tail_type"]))
-                source_node = Node(
-                    id=rel["head"],
-                    type=rel["head_type"]
-                )
-                target_node = Node(
-                    id=rel["tail"],
-                    type=rel["tail_type"]
-                )
-                relationships.append(
-                    Relationship(
-                        source=source_node,
-                        target=target_node,
-                        type=rel["relation"]
-                    )
-                )
-            except:
-                print(f"Error processing relation: {rel}")
+def process_folder_json(folderPath: str):
+    month = str(os.path.basename(folderPath))
+    parent_dir = os.path.dirname(folderPath)
+    year = str(os.path.basename(parent_dir))
+    existing_file_list = []
+    # check if csv already exists 
+    if os.path.exists(folderPath + "/" + str(year) + "_" + str(month) + ".csv"):
+        old_df = pd.read_csv(folderPath + "/" + str(year) + "_" + str(month) + ".csv")
+        existing_file_list = old_df['Filename'].tolist()
+    files = os.listdir(folderPath)
+    lis = []
+    for file in files:
+        if file.endswith(".json"):
+            if os.path.basename(file) not in existing_file_list:
+                filePath = os.path.join(folderPath, file)
+                file_return = get_return_from_json(filePath)
+                # initialize list of lists
+                entry = [os.path.basename(filePath), file_return.performance]
+                lis.append(entry)
 
-    nodes = [Node(id = n[0], type = n[1]) for n in list(nodes_set)]
-    return GraphDocument(nodes = nodes, relationships = relationships, source = source_doc)
-
-"""
-def query(query: str, params: dict = {}) -> List[Dict[str, Any]]:
-    #graph.add_graph_documents([doc], include_source = True, baseEntityLabel = True)
-    with GraphDatabase.driver(config["Neo4j"]["uri"], auth=(config["Neo4j"]["username"], config["Neo4j"]["password"])) as driver:
-        with driver.session() as session:
-            try:
-                data = session.run(Query(text = query, timeout = None), params)
-                json_data = [r.data() for r in data]
-                return json_data
-            except CypherSyntaxError as e:
-                raise ValueError(f"Generated Cypher Statement is not valid\n{e}")
-
-def upload_graph_doc(graph_doc: GraphDocument):
-    # Upload nodes
-    query(
-        NODE_IMPORT_QUERY,
-        {'data': [n.__dict__ for n in graph_doc.nodes],
-        'document': graph_doc.source.__dict__
-        }
-    )
-
-    # Upload relationships
-    query(
-        REL_IMPORT_QUERY,
-        {
-            "data": [
-                {
-                    "source": n.source.id,
-                    "source_label": n.source.type,
-                    "target": n.target.id,
-                    "target_label": n.target.type,
-                    "type": n.type.replace(" ", "_").upper(),
-                    "properties": n.properties
-                }
-                for n in graph_doc.relationships
-            ]
-        }
-    )
-"""
-
-def add_doc_to_neo4j(doc: GraphDocument):
-    graph = neo4j_graph.Neo4jGraph(url = config["Neo4j"]["uri"], username = config["Neo4j"]["username"], password = config["Neo4j"]["password"])
-    graph.add_graph_documents([doc], include_source = True, baseEntityLabel = True)
-
-
+    df = pd.DataFrame(lis, columns=['Filename', 'Monthly Return'])
+    csv_path = folderPath + "/" + str(year) + "_" + str(month) + ".csv"
+    df.to_csv(csv_path, index=False)
 
