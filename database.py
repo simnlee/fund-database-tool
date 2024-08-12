@@ -1,13 +1,11 @@
 import os 
 from langchain_core.prompts.prompt import PromptTemplate
-from langchain_core.prompts.chat import HumanMessagePromptTemplate, ChatPromptTemplate, SystemMessage
-from langchain_core.output_parsers.json import JsonOutputParser 
 from data_processing import *
 from langchain_cohere import ChatCohere, CohereEmbeddings
 from typing import List
 from langchain_community.vectorstores import Chroma
 from langchain.output_parsers import PydanticOutputParser
-from langchain_core.pydantic_v1 import BaseModel, Field, validator
+from langchain_core.pydantic_v1 import BaseModel, Field
 import pandas as pd
 
 config = load_config()
