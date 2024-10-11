@@ -22,7 +22,7 @@ winget install --id GitHub.cli
 
 Then in the same Command Prompt, run
 ```
-gh repo clone https://github.com/avbdasf/fund-database-tool
+gh repo clone https://github.com/simnlee/fund-database-tool
 ```
 
 Install pip by running 
